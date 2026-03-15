@@ -16,8 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from openai import OpenAI
-from zep_cloud.client import Zep
-
+from .local_graph_store import LocalGraphClient
 from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode, ZepEntityReader
@@ -183,7 +182,6 @@ class OasisProfileGenerator:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
-        zep_api_key: Optional[str] = None,
         graph_id: Optional[str] = None
     ):
         self.api_key = api_key or Config.LLM_API_KEY
@@ -198,16 +196,9 @@ class OasisProfileGenerator:
             base_url=self.base_url
         )
 
-        # Zep client for retrieving enriched context
-        self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
-        self.zep_client = None
+        # Local graph client for retrieving enriched context
+        self.zep_client = LocalGraphClient()
         self.graph_id = graph_id
-
-        if self.zep_api_key:
-            try:
-                self.zep_client = Zep(api_key=self.zep_api_key)
-            except Exception as e:
-                logger.warning(f"Failed to initialize Zep client: {e}")
 
     def generate_profile_from_entity(
         self,
@@ -298,9 +289,6 @@ class OasisProfileGenerator:
         """
         import concurrent.futures
 
-        if not self.zep_client:
-            return {"facts": [], "node_summaries": [], "context": ""}
-
         entity_name = entity.name
 
         results = {
@@ -311,88 +299,43 @@ class OasisProfileGenerator:
 
         # A graph_id is required for search
         if not self.graph_id:
-            logger.debug(f"Skipping Zep search: graph_id is not set")
+            logger.debug(f"Skipping graph search: graph_id is not set")
             return results
 
         comprehensive_query = f"All information, activities, events, relationships, and background about {entity_name}"
 
-        def search_edges():
-            """Search edges (facts/relationships) — with retry mechanism"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
-                        query=comprehensive_query,
-                        graph_id=self.graph_id,
-                        limit=30,
-                        scope="edges",
-                        reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep edge search attempt {attempt + 1} failed: {str(e)[:80]}, retrying...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep edge search failed after {max_retries} attempts: {e}")
-            return None
-
-        def search_nodes():
-            """Search nodes (entity summaries) — with retry mechanism"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
-                        query=comprehensive_query,
-                        graph_id=self.graph_id,
-                        limit=20,
-                        scope="nodes",
-                        reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep node search attempt {attempt + 1} failed: {str(e)[:80]}, retrying...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep node search failed after {max_retries} attempts: {e}")
-            return None
-
         try:
-            # Execute edge and node searches in parallel
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                edge_future = executor.submit(search_edges)
-                node_future = executor.submit(search_nodes)
+            # Search for related nodes using the local graph client
+            node_results = self.zep_client.graph.search(
+                graph_id=self.graph_id,
+                query=comprehensive_query,
+                limit=20,
+            )
 
-                # Collect results
-                edge_result = edge_future.result(timeout=30)
-                node_result = node_future.result(timeout=30)
-
-            # Process edge search results
-            all_facts = set()
-            if edge_result and hasattr(edge_result, 'edges') and edge_result.edges:
-                for edge in edge_result.edges:
-                    if hasattr(edge, 'fact') and edge.fact:
-                        all_facts.add(edge.fact)
-            results["facts"] = list(all_facts)
-
-            # Process node search results
+            # Process node search results — each result is a NodeSearchResult with .node and .score
             all_summaries = set()
-            if node_result and hasattr(node_result, 'nodes') and node_result.nodes:
-                for node in node_result.nodes:
-                    if hasattr(node, 'summary') and node.summary:
-                        all_summaries.add(node.summary)
-                    if hasattr(node, 'name') and node.name and node.name != entity_name:
-                        all_summaries.add(f"Related entity: {node.name}")
+            node_uuids = []
+            for result in node_results:
+                node = result.node
+                if hasattr(node, 'summary') and node.summary:
+                    all_summaries.add(node.summary)
+                if hasattr(node, 'name') and node.name and node.name != entity_name:
+                    all_summaries.add(f"Related entity: {node.name}")
+                if hasattr(node, 'uuid_') and node.uuid_:
+                    node_uuids.append(node.uuid_)
             results["node_summaries"] = list(all_summaries)
+
+            # Fetch edges for found nodes to extract facts
+            all_facts = set()
+            for node_uuid in node_uuids[:10]:
+                try:
+                    edges = self.zep_client.graph.node.get_entity_edges(node_uuid=node_uuid)
+                    for edge in edges:
+                        if hasattr(edge, 'fact') and edge.fact:
+                            all_facts.add(edge.fact)
+                except Exception:
+                    pass
+            results["facts"] = list(all_facts)
 
             # Build comprehensive context
             context_parts = []
@@ -402,12 +345,12 @@ class OasisProfileGenerator:
                 context_parts.append("Related entities:\n" + "\n".join(f"- {s}" for s in results["node_summaries"][:10]))
             results["context"] = "\n\n".join(context_parts)
 
-            logger.info(f"Zep hybrid search complete: {entity_name}, retrieved {len(results['facts'])} facts, {len(results['node_summaries'])} related nodes")
+            logger.info(f"Graph search complete: {entity_name}, retrieved {len(results['facts'])} facts, {len(results['node_summaries'])} related nodes")
 
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Zep search timed out ({entity_name})")
+            logger.warning(f"Graph search timed out ({entity_name})")
         except Exception as e:
-            logger.warning(f"Zep search failed ({entity_name}): {e}")
+            logger.warning(f"Graph search failed ({entity_name}): {e}")
 
         return results
 

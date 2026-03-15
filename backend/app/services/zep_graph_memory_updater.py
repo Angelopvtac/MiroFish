@@ -12,9 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from queue import Queue, Empty
 
-from zep_cloud.client import Zep
-
-from ..config import Config
+from .local_graph_store import LocalGraphClient
 from ..utils.logger import get_logger
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
@@ -232,21 +230,15 @@ class ZepGraphMemoryUpdater:
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # seconds
 
-    def __init__(self, graph_id: str, api_key: Optional[str] = None):
+    def __init__(self, graph_id: str):
         """
         Initialize the updater
 
         Args:
-            graph_id: Zep graph ID
-            api_key: Zep API key (optional; defaults to configuration value)
+            graph_id: Graph ID
         """
         self.graph_id = graph_id
-        self.api_key = api_key or Config.ZEP_API_KEY
-
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY is not configured")
-
-        self.client = Zep(api_key=self.api_key)
+        self.client = LocalGraphClient()
 
         # Activity queue
         self._activity_queue: Queue = Queue()

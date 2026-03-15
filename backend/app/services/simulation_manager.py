@@ -270,7 +270,7 @@ class SimulationManager:
 
             # ========== Phase 1: Read and filter entities ==========
             if progress_callback:
-                progress_callback("reading", 0, "Connecting to Zep graph...")
+                progress_callback("reading", 0, "Connecting to knowledge graph...")
 
             reader = ZepEntityReader()
 
@@ -311,7 +311,7 @@ class SimulationManager:
                     total=total_entities
                 )
 
-            # Pass graph_id to enable Zep retrieval for richer context
+            # Pass graph_id to enable graph retrieval for richer context
             generator = OasisProfileGenerator(graph_id=state.graph_id)
 
             def profile_progress(current, total, msg):

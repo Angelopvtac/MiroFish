@@ -13,9 +13,7 @@ import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
-from zep_cloud.client import Zep
-
-from ..config import Config
+from .local_graph_store import LocalGraphClient
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
@@ -421,12 +419,8 @@ class ZepToolsService:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
 
-    def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
-        self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY is not configured")
-
-        self.client = Zep(api_key=self.api_key)
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        self.client = LocalGraphClient()
         # LLM client used by InsightForge to generate sub-queries
         self._llm_client = llm_client
         logger.info("ZepToolsService initialized")

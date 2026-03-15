@@ -1,8 +1,11 @@
-"""Zep Graph paginated reading utilities.
+"""Graph paginated reading utilities.
 
-Zep's node/edge list APIs use UUID-cursor pagination.
-This module wraps the auto-pagination logic (with per-page retries)
+Wraps the UUID-cursor pagination logic (with per-page retries)
 so that callers transparently receive the complete list.
+
+Works with LocalGraphClient (client.graph.node.get_by_graph_id /
+client.graph.edge.get_by_graph_id) which expose the same interface
+that the former Zep Cloud SDK did.
 """
 
 from __future__ import annotations
@@ -10,9 +13,6 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from typing import Any
-
-from zep_cloud import InternalServerError
-from zep_cloud.client import Zep
 
 from .logger import get_logger
 
@@ -42,23 +42,23 @@ def _fetch_page_with_retry(
     for attempt in range(max_retries):
         try:
             return api_call(*args, **kwargs)
-        except (ConnectionError, TimeoutError, OSError, InternalServerError) as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             last_exception = e
             if attempt < max_retries - 1:
                 logger.warning(
-                    f"Zep {page_description} attempt {attempt + 1} failed: {str(e)[:100]}, retrying in {delay:.1f}s..."
+                    f"Graph {page_description} attempt {attempt + 1} failed: {str(e)[:100]}, retrying in {delay:.1f}s..."
                 )
                 time.sleep(delay)
                 delay *= 2
             else:
-                logger.error(f"Zep {page_description} failed after {max_retries} attempts: {str(e)}")
+                logger.error(f"Graph {page_description} failed after {max_retries} attempts: {str(e)}")
 
     assert last_exception is not None
     raise last_exception
 
 
 def fetch_all_nodes(
-    client: Zep,
+    client: Any,
     graph_id: str,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_items: int = _MAX_NODES,
@@ -104,7 +104,7 @@ def fetch_all_nodes(
 
 
 def fetch_all_edges(
-    client: Zep,
+    client: Any,
     graph_id: str,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_retries: int = _DEFAULT_MAX_RETRIES,
